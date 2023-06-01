@@ -173,11 +173,37 @@ public:
         calculator = myCalculator;
     }
 
+    KvlCostAndGradientCalculator(KvlMeshCollection meshCollection,
+                                 double K0,
+                                 py::array_t<double> K1s=py::array_t<double>(),
+                                 KvlTransform transform = KvlTransform(nullptr)
+    ){
+
+        std::cout << "### Reading weights..." << std::endl;
+        kvl::AverageAtlasMeshPositionCostAndGradientCalculator::Pointer myCalculator = kvl::AverageAtlasMeshPositionCostAndGradientCalculator::New();
+        myCalculator->SetBoundaryCondition(kvl::AtlasMeshPositionCostAndGradientCalculator::SLIDING);
+        // Retrieve transform if provided
+        TransformType::ConstPointer constTransform = static_cast<const TransformType*>(transform.m_transform.GetPointer());
+        if (constTransform.GetPointer()) myCalculator->SetMeshToImageTransform( constTransform );
+        // Apply positions and Ks
+        kvl::AtlasMeshCollection::Pointer meshCollectionPtr = meshCollection.GetMeshCollection();
+        std::vector<double> Ks = {K0};
+        std::vector<kvl::AtlasMesh::PointsContainer::ConstPointer> positions = {meshCollectionPtr->GetReferencePosition()};
+        for (int  meshNumber = 0; meshNumber < meshCollectionPtr->GetPositions().size(); meshNumber++) {
+            positions.push_back(meshCollectionPtr->GetPositions()[meshNumber].GetPointer()); 
+            
+            std::cout << (double)(K1s.at(meshNumber)) << std::endl;
+            Ks.push_back((double)(K1s.at(meshNumber)));
+        }
+        myCalculator->SetPositionsAndKs(positions, Ks);
+        calculator = myCalculator;
+    }
+
     std::pair<double, py::array_t<double>> EvaluateMeshPosition(const KvlMesh &mesh) {
         calculator->Rasterize( mesh.mesh );
         const double cost = calculator->GetMinLogLikelihoodTimesPrior();
         kvl::AtlasPositionGradientContainerType::ConstPointer gradient = calculator->GetPositionGradient();
-
+        
         const size_t numberOfNodes = gradient->Size();
         auto const data = new double[numberOfNodes*3];
         auto data_it = data;

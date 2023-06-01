@@ -1,0 +1,551 @@
+#!/usr/bin/env python
+#%%
+import sys
+sys.path.append("/scratch/users/lhaupt/ext/freesurfer_cmake/python/packages")
+import os
+import argparse
+import surfa as sf
+import gems
+import pandas as pd
+
+
+# ------ Parse Command Line Arguments ------
+
+parser = argparse.ArgumentParser()
+
+default_threads = int(os.environ.get('OMP_NUM_THREADS', 1))
+
+# required
+parser.add_argument('-t', '--timepoint', nargs='+', action='append', required=True, help='Configure a timepoint with multiple inputs.')
+parser.add_argument('-u', '--update-timepoint', nargs='+', action='append', required=True, help='Configure a timepoint with multiple inputs.')
+parser.add_argument('-o', '--output', required=True, help='Output directory.')
+#parser.add_argument('-y', '--years', nargs='+', action='append', help='Assingn years to each given timepoint')
+# optional lesion options
+parser.add_argument('--lesion', action='store_true', default=False, help='Enable lesion segmentation (requires tensorflow).')
+parser.add_argument('--threshold', type=float, default=0.3, help='Lesion threshold for final segmentation. Lesion segmentation must be enabled.')
+parser.add_argument('--samples', type=int, default=50, help='Number of samples for lesion segmentation. Lesion segmentation must be enabled.')
+parser.add_argument('--burnin', type=int, default=50, help='Number of burn-in samples for lesion segmentation. Lesion segmentation must be enabled.')
+parser.add_argument('--lesion-mask-structure', default='Cortex', help='Intensity mask brain structure. Lesion segmentation must be enabled.')
+parser.add_argument('--lesion-mask-pattern', type=int, nargs='+', help='Lesion mask list (set value for each input volume): -1 below lesion mask structure mean, +1 above, 0 no mask. Lesion segmentation must be enabled.')
+# optional processing options
+parser.add_argument('-m', '--mode', nargs='+', help='Output basenames for the input image mode.')
+parser.add_argument('-a', '--atlas', metavar='DIR', help='Point to an alternative atlas directory.')
+parser.add_argument('--deformation-hyperprior', type=float, default=20.0, help='Strength of the latent deformation hyperprior.')
+parser.add_argument('--gmm-hyperprior', type=float, default=0.5, help='Strength of the latent GMM hyperprior.')
+parser.add_argument('--save-warp', action='store_true', help='Save the image->template warp fields.')
+parser.add_argument('--save-mesh', action='store_true', help='Save the final mesh of each timepoint in template space.')
+parser.add_argument('--save-posteriors', nargs='*', help='Save posterior volumes to the "posteriors" subdirectory.')
+parser.add_argument('--pallidum-separate', action='store_true', default=False, help='Move pallidum outside of global white matter class. Use this flag when T2/flair is used.')
+parser.add_argument('--threads', type=int, default=default_threads, help='Number of threads to use. Defaults to current OMP_NUM_THREADS or 1.')
+# optional debugging options
+parser.add_argument('--history', action='store_true', default=False, help='Save history.')
+parser.add_argument('--showfigs', action='store_true', default=False, help='Show figures during run.')
+parser.add_argument('--movie', action='store_true', default=False, help='Show history as arrow key controlled time sequence.')
+#%%
+args1_str = "--timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_baseline_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_1y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_2y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_3y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_4y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_5y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_6y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_7y_brain.nii.gz --update-timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_7y_brain.nii.gz --output /scratch/users/lhaupt/data/NCANDA/labels_samseg_upw/NCANDA_S00219 --threads 4"
+args2_str = "--timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_baseline_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_1y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_2y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_3y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_4y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_5y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_6y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_7y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_8y_brain.nii.gz --update-timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00219_followup_8y_brain.nii.gz --output /scratch/users/lhaupt/data/NCANDA/labels_samseg_update/NCANDA_S00219"
+args3_str = "--timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_baseline_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_1y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_2y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_3y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_4y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_5y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_6y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_7y_brain.nii.gz --timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_8y_brain.nii.gz --update-timepoint /scratch/users/lhaupt/data/NCANDA/MRIs/NCANDA_S00314_followup_8y_brain.nii.gz --output /scratch/users/lhaupt/data/NCANDA/labels_samseg_update/NCANDA_S00314"
+args = parser.parse_args()
+#%%
+# ------ Initial Setup ------
+
+# Make sure more than 1 timepoint was specified
+if len(args.timepoint) == 1:
+    sf.system.fatal('must provide more than 1 timepoint')
+
+# Make sure freesurfer has been sourced
+if not os.environ.get('FREESURFER_HOME'):
+    sf.system.fatal('FREESURFER_HOME must be set')
+
+# Create the output folder
+os.makedirs(args.output, exist_ok=True)
+
+# Specify the maximum number of threads the GEMS code will use
+gems.setGlobalDefaultNumberOfThreads(args.threads)
+
+# Get the atlas directory
+atlasDir = os.environ.get('SAMSEG_DATA_DIR')
+if args.atlas:
+    atlasDir = args.atlas
+if not atlasDir:
+    # Atlas defaults
+    if args.lesion:
+        defaultAtlas = '20Subjects_smoothing2_down2_smoothingForAffine2_lesion'
+    else:
+        defaultAtlas = '20Subjects_smoothing2_down2_smoothingForAffine2'
+    atlasDir = os.path.join(os.environ.get('FREESURFER_HOME'), 'average', 'samseg', defaultAtlas)
+
+# Setup the visualization tool
+visualizer = gems.initVisualizer(args.showfigs, args.movie)
+
+# Start the process timer
+timer = gems.Timer()
+
+# Check if --save-posteriors was specified without any structure search string
+if args.save_posteriors is not None and len(args.save_posteriors) == 0:
+    savePosteriors = True
+else:
+    savePosteriors = args.save_posteriors
+
+# get years
+
+visit_list = ["baseline", "followup_1y", "followup_2y", "followup_3y", "followup_4y", "followup_5y", "followup_6y", "followup_7y", "followup_8y", "followup_9y", "followup_10y"]
+
+df_dem = pd.read_csv("/scratch/users/lhaupt/data/NCANDA/demographics.csv")
+df_dem.set_index(["subject", "visit"], inplace=True)
+df_dem = df_dem[df_dem["arm"] == "standard"]
+df_ages = df_dem[["visit_age"]]
+subject_files = [os.path.basename(el[0]).replace("_brain.nii.gz", "") for el in args.timepoint]
+index_files = [("_".join(el.split("_")[:2]), "_".join(el.split("_")[2:])) for el in subject_files]
+ages = []
+for ind in index_files:
+    if ind in df_ages.index:
+        age = df_ages["visit_age"].loc[ind]
+    elif ind[0] in df_ages.index.get_level_values(0):
+        year = [i for (i,el) in enumerate(visit_list) if el in ind[1]][0]
+        year -= 1
+        inc = 1
+        while year >= 0:
+            if (ind[0], visit_list[year]) in df_ages.index:
+                age = df_ages["visit_age"].loc[(ind[0], visit_list[year])] + inc
+                break
+            inc += 1
+            year -= 1
+        
+        if year == 0:
+            age = 0
+    else:
+        age = 0
+        
+    ages.append(age)
+        
+
+# ------ Run Samsegment ------
+
+samseg_kwargs = dict(
+    imageFileNamesList=args.timepoint,
+    updateFileNamesList = args.update_timepoint,
+    imageTimePoints = ages,
+    atlasDir=atlasDir,
+    savePath=args.output,
+    targetIntensity=110,
+    targetSearchStrings=['Cerebral-White-Matter'],
+    modeNames=args.mode,
+    pallidumAsWM=(not args.pallidum_separate),
+    strengthOfLatentDeformationHyperprior=args.deformation_hyperprior,
+    strengthOfLatentGMMHyperprior=args.gmm_hyperprior,
+    savePosteriors=savePosteriors,
+    saveMesh=args.save_mesh,
+    saveHistory=args.history,
+    visualizer=visualizer
+)
+
+if args.lesion:
+
+    # If lesion mask pattern is not specified, assume inputs are T1-contrast
+    lesion_mask_pattern = args.lesion_mask_pattern
+    if lesion_mask_pattern is None:
+        lesion_mask_pattern = [0] * len(args.timepoint[0])
+        print('Defaulting lesion mask pattern to %s' % str(lesion_mask_pattern))
+
+    # Delay import until here so that tensorflow doesn't get loaded unless needed
+    from freesurfer.samseg.SamsegLongitudinalLesion import SamsegLongitudinalLesion
+    samsegLongitudinal = SamsegLongitudinalLesion(**samseg_kwargs,
+        intensityMaskingSearchString=args.lesion_mask_structure,
+        intensityMaskingPattern=lesion_mask_pattern,
+        numberOfBurnInSteps=args.burnin,
+        numberOfSamplingSteps=args.samples,
+        threshold=args.threshold
+    )
+
+else:
+    samsegLongitudinal = gems.SamsegLongitudinalUpdateWeighted(**samseg_kwargs)
+
+#%%
+samsegLongitudinal.segment(saveWarp=args.save_warp)
+
+timer.mark('run_samseg_long complete')
+#%%
+
+
+
+
+#%%
+""" 
+import numpy as np
+from freesurfer.samseg.utilities import requireNumpyArray
+from freesurfer.samseg import gems
+import time
+import datetime
+class Timer:
+    def __init__(self):
+        samsegLongitudinalcurrent_time = time.time()
+
+    def __call__(self, name):
+        elapsed_time = time.time() - samsegLongitudinalcurrent_time
+        samsegLongitudinalcurrent_time = time.time()
+        print(f"\n #T#: {name}: {str(datetime.timedelta(seconds=elapsed_time))} \n")
+
+
+
+# %%
+
+samsegLongitudinal.timerFit = Timer()
+
+# =======================================================================================
+#
+# Parameter estimation for SST
+#
+# =======================================================================================
+if not samsegLongitudinal.latentInitialized:
+    samsegLongitudinal.sstModel.fitModel()
+    samsegLongitudinal.latentInitialized = True
+
+if hasattr(samsegLongitudinal.visualizer, 'show_flag'):
+    import matplotlib.pyplot as plt  # avoid importing matplotlib by default
+    plt.ion()
+    samsegLongitudinal.sstModel.biasField.downSampleBasisFunctions([1, 1, 1])
+    sstBiasFields = samsegLongitudinal.sstModel.biasField.getBiasFields( samsegLongitudinal.sstModel.mask)
+    sstData = samsegLongitudinal.sstModel.imageBuffers[samsegLongitudinal.sstModel.mask, :] - sstBiasFields[samsegLongitudinal.sstModel.mask, :]
+    axsList = []
+    for contrastNumber in range(samsegLongitudinal.sstModel.gmm.numberOfContrasts):
+        f = plt.figure()
+        numberOfAxes = 2 + samsegLongitudinal.numberOfTimepoints
+        numberOfRows = np.int(np.ceil(np.sqrt(numberOfAxes)))
+        numberOfColumns = np.int(np.ceil(numberOfAxes / numberOfRows))
+        axs = f.subplots(numberOfRows, numberOfColumns, sharex=True)
+        ax = axs.ravel()[0]
+        _, bins, _ = ax.hist(samsegLongitudinal.sstModel.imageBuffers[samsegLongitudinal.sstModel.mask, contrastNumber], 100)
+        ax.grid()
+        ax.set_title('sst before bias field correction')
+        ax = axs.ravel()[1]
+        ax.hist(sstData[:, contrastNumber], bins)
+        ax.grid()
+        ax.set_title('sst after bias field correction')
+        for timepointNumber in range(samsegLongitudinal.numberOfTimepoints):
+            ax = axs.ravel()[2 + timepointNumber]
+            ax.hist(samsegLongitudinal.imageBuffersList[timepointNumber][samsegLongitudinal.sstModel.mask, contrastNumber], bins)
+            ax.grid()
+            ax.set_title('time point ' + str(timepointNumber))
+        axsList.append(axs)
+    plt.draw()
+
+if samsegLongitudinal.saveHistory:
+    samsegLongitudinal.history = {
+        "sstMeans": samsegLongitudinal.sstModel.gmm.means,
+        "sstVariances": samsegLongitudinal.sstModel.gmm.variances,
+        "sstMixtureWeights": samsegLongitudinal.sstModel.gmm.mixtureWeights,
+        "sstBiasFieldCoefficients": samsegLongitudinal.sstModel.biasField.coefficients,
+        "sstDeformation": samsegLongitudinal.sstModel.deformation,
+        "sstDeformationAtlasFileName": samsegLongitudinal.sstModel.deformationAtlasFileName,
+        "sstOptimizationSummary": samsegLongitudinal.sstModel.optimizationSummary,
+        "sstOptimizationHistory": samsegLongitudinal.sstModel.optimizationHistory
+    }
+
+if samsegLongitudinal.saveSSTResults:
+    sstlabels, sstnames, sstVolumesInCubicMm, sstoptimizationSummary = samsegLongitudinal.sstModel.postProcess()
+
+    #
+    if samsegLongitudinal.saveHistory:
+        samsegLongitudinal.history["sstVolumesInCubicMm"] = sstVolumesInCubicMm
+#%%
+# =======================================================================================
+#
+# Iterative parameter vs. latent variables estimation, using SST result for initialization
+# and/or anchoring of hyperprior strength
+#
+# =======================================================================================
+# Initialization of the time-specific model parameters
+# We need to initialize these differently
+for timepointNumber in samsegLongitudinal.timepointNumberUpdate:
+    samsegLongitudinal.timepointModels[timepointNumber].initializeGMM()
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.means = samsegLongitudinal.sstModel.gmm.means.copy()
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.variances = samsegLongitudinal.sstModel.gmm.variances.copy()
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.mixtureWeights = samsegLongitudinal.sstModel.gmm.mixtureWeights.copy()
+    samsegLongitudinal.timepointModels[timepointNumber].initializeBiasField()
+
+# Initialization of the latent variables, acting as hyperparameters when viewed from the model parameters' perspective
+samsegLongitudinal.latentDeformation = samsegLongitudinal.sstModel.deformation.copy()
+samsegLongitudinal.latentDeformationAtlasFileName = samsegLongitudinal.sstModel.deformationAtlasFileName
+samsegLongitudinal.latentMeans = samsegLongitudinal.sstModel.gmm.means.copy()
+samsegLongitudinal.latentVariances = samsegLongitudinal.sstModel.gmm.variances.copy()
+samsegLongitudinal.latentMixtureWeights = samsegLongitudinal.sstModel.gmm.mixtureWeights.copy()
+
+if samsegLongitudinal.initializeLatentDeformationToZero:
+    for timepointNumber in samsegLongitudinal.timepointNumberUpdate:
+        samsegLongitudinal.timepointModels[timepointNumber].deformation = samsegLongitudinal.latentDeformation.copy()
+        samsegLongitudinal.timepointModels[timepointNumber].latentDeformationAtlasFileName = samsegLongitudinal.latentDeformationAtlasFileName
+        samsegLongitudinal.latentDeformation[:] = 0
+
+# Strength of the hyperprior (i.e., how much the latent variables control the conditional posterior of the parameters)
+# is user-controlled.
+#
+# For the GMM part, I'm using the *average* number of voxels assigned to the components in each mixture (class) of the
+# SST segmentation, so that all the components in each mixture are well-regularized (and tiny components don't get to do
+# whatever they want)
+# TAG: 
+K0 = samsegLongitudinal.sstModel.modelSpecifications.K  # Stiffness population -> latent position
+K1 = samsegLongitudinal.strengthOfLatentDeformationHyperprior * K0  # Stiffness latent position -> each time point
+sstEstimatedNumberOfVoxelsPerGaussian = np.sum(samsegLongitudinal.sstModel.optimizationHistory[-1]['posteriorsAtEnd'], axis=0) * \
+                                        np.prod(samsegLongitudinal.sstModel.optimizationHistory[-1]['downSamplingFactors'])
+numberOfClasses = len(samsegLongitudinal.sstModel.gmm.numberOfGaussiansPerClass)
+numberOfGaussians = sum(samsegLongitudinal.sstModel.gmm.numberOfGaussiansPerClass)
+samsegLongitudinal.latentMeansNumberOfMeasurements = np.zeros(numberOfGaussians)
+samsegLongitudinal.latentVariancesNumberOfMeasurements = np.zeros(numberOfGaussians)
+samsegLongitudinal.latentMixtureWeightsNumberOfMeasurements = np.zeros(numberOfClasses)
+for classNumber in range(numberOfClasses):
+    #
+    numberOfComponents = samsegLongitudinal.sstModel.gmm.numberOfGaussiansPerClass[classNumber]
+    gaussianNumbers = np.array(np.sum(samsegLongitudinal.sstModel.gmm.numberOfGaussiansPerClass[:classNumber]) +
+                                np.array(range(numberOfComponents)), dtype=np.uint32)
+    sstEstimatedNumberOfVoxelsInClass = np.sum(sstEstimatedNumberOfVoxelsPerGaussian[gaussianNumbers])
+
+    samsegLongitudinal.latentMixtureWeightsNumberOfMeasurements[
+        classNumber] = samsegLongitudinal.strengthOfLatentGMMHyperprior * sstEstimatedNumberOfVoxelsInClass
+
+    averageSizeOfComponents = sstEstimatedNumberOfVoxelsInClass / numberOfComponents
+    samsegLongitudinal.latentMeansNumberOfMeasurements[gaussianNumbers] = samsegLongitudinal.strengthOfLatentGMMHyperprior * averageSizeOfComponents
+    samsegLongitudinal.latentVariancesNumberOfMeasurements[gaussianNumbers] = samsegLongitudinal.strengthOfLatentGMMHyperprior * averageSizeOfComponents
+
+# Estimating the mode of the latentVariance posterior distribution (which is Wishart) requires a stringent condition
+# on latentVariancesNumberOfMeasurements so that the mode is actually defined
+threshold = (samsegLongitudinal.sstModel.gmm.numberOfContrasts + 2) + 1e-6
+samsegLongitudinal.latentVariancesNumberOfMeasurements[samsegLongitudinal.latentVariancesNumberOfMeasurements < threshold] = threshold
+
+# No point in updating latent GMM parameters if the GMM hyperprior has zero weight. The latent variances are also
+# a bit tricky, as they're technically driven to zero in that scenario -- let's try not to go there...
+if samsegLongitudinal.strengthOfLatentGMMHyperprior == 0:
+    samsegLongitudinal.updateLatentMeans, samsegLongitudinal.updateLatentVariances, samsegLongitudinal.updateLatentMixtureWeights = False, False, False
+
+# Loop over all iterations
+samsegLongitudinal.historyOfTotalCost, samsegLongitudinal.historyOfTotalTimepointCost, samsegLongitudinal.historyOfLatentAtlasCost = [], [], []
+progressPlot = None
+iterationNumber = 0
+if samsegLongitudinal.saveHistory:
+    samsegLongitudinal.history = {**samsegLongitudinal.history,
+                **{
+                    "timepointMeansEvolution": [],
+                    "timepointVariancesEvolution": [],
+                    "timepointMixtureWeightsEvolution": [],
+                    "timepointBiasFieldCoefficientsEvolution": [],
+                    "timepointDeformationsEvolution": [],
+                    "timepointDeformationAtlasFileNamesEvolution": [],
+                    "latentMeansEvolution": [],
+                    "latentVariancesEvolution": [],
+                    "latentMixtureWeightsEvolution": [],
+                    "latentDeformationEvolution": [],
+                    "latentDeformationAtlasFileNameEvolution": []
+                }
+                }
+
+# Make latent atlas directory
+latentAtlasDirectory = os.path.join(samsegLongitudinal.savePath, 'latentAtlases')
+os.makedirs(latentAtlasDirectory, exist_ok=True)
+
+samsegLongitudinal.timerFit(f"Fit Initalization ")
+#%%
+
+# =======================================================================================
+#
+# Update parameters for each time point using the current latent variable estimates
+#
+# =======================================================================================
+
+# Create a new atlas that will be the basis to deform the individual time points from
+latentAtlasFileName = os.path.join(latentAtlasDirectory, 'latentAtlas_iteration_%02d.mgz' % (iterationNumber + 1))
+samsegLongitudinal.probabilisticAtlas.saveDeformedAtlas(samsegLongitudinal.latentDeformationAtlasFileName, latentAtlasFileName, samsegLongitudinal.latentDeformation, True)
+#pdb.set_trace()
+# Only use the last resolution level, and with the newly created atlas as atlas
+for timepointNumber in samsegLongitudinal.timepointNumberUpdate:
+    samsegLongitudinal.timepointModels[timepointNumber].optimizationOptions = samsegLongitudinal.sstModel.optimizationOptions
+    samsegLongitudinal.timepointModels[timepointNumber].optimizationOptions['multiResolutionSpecification'] = [
+        samsegLongitudinal.timepointModels[timepointNumber].optimizationOptions['multiResolutionSpecification'][-1]]
+    samsegLongitudinal.timepointModels[timepointNumber].optimizationOptions['multiResolutionSpecification'][0]['atlasFileName'] = latentAtlasFileName
+    print(samsegLongitudinal.timepointModels[timepointNumber].optimizationOptions)
+
+# Loop over all time points
+totalTimepointCost = 0
+for timepointNumber in samsegLongitudinal.timepointNumberUpdate:
+    # TODO add the specific weights here
+    samsegLongitudinal.timepointModels[timepointNumber].modelSpecifications.K = K1 
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.hyperMeans = samsegLongitudinal.latentMeans
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.hyperVariances = samsegLongitudinal.latentVariances
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.hyperMixtureWeights = samsegLongitudinal.latentMixtureWeights
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.fullHyperMeansNumberOfMeasurements = samsegLongitudinal.latentMeansNumberOfMeasurements.copy()
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.fullHyperVariancesNumberOfMeasurements = samsegLongitudinal.latentVariancesNumberOfMeasurements.copy()
+    samsegLongitudinal.timepointModels[timepointNumber].gmm.fullHyperMixtureWeightsNumberOfMeasurements = samsegLongitudinal.latentMixtureWeightsNumberOfMeasurements.copy()
+
+    samsegLongitudinal.timepointModels[timepointNumber].estimateModelParameters(
+                                initialBiasFieldCoefficients=samsegLongitudinal.timepointModels[timepointNumber].biasField.coefficients,
+                                initialDeformation=samsegLongitudinal.timepointModels[timepointNumber].deformation,
+                                initialDeformationAtlasFileName=samsegLongitudinal.timepointModels[timepointNumber].deformationAtlasFileName,
+                                skipBiasFieldParameterEstimationInFirstIteration=False,
+                                skipGMMParameterEstimationInFirstIteration=(iterationNumber == 0)
+                                )
+
+    totalTimepointCost += samsegLongitudinal.timepointModels[timepointNumber].optimizationHistory[-1]['historyOfCost'][-1]
+
+    print('=================================')
+    print('\n')
+    print('timepointNumber: ', timepointNumber)
+    print('perVoxelCost: ', samsegLongitudinal.timepointModels[timepointNumber].optimizationSummary[-1]['perVoxelCost'])
+    print('\n')
+    print('=================================')
+    if hasattr(samsegLongitudinal.visualizer, 'show_flag'):
+        import matplotlib.pyplot as plt  # avoid importing matplotlib by default
+        plt.ion()
+        samsegLongitudinal.timepointModels[timepointNumber].biasField.downSampleBasisFunctions([1, 1, 1])
+        timepointBiasFields = samsegLongitudinal.timepointModels[timepointNumber].biasField.getBiasFields(samsegLongitudinal.sstModel.mask)
+        timepointData = samsegLongitudinal.imageBuffersList[timepointNumber][samsegLongitudinal.sstModel.mask, :] - timepointBiasFields[samsegLongitudinal.sstModel.mask, :]
+        for contrastNumber in range(samsegLongitudinal.sstModel.gmm.numberOfContrasts):
+            axs = axsList[contrastNumber]
+            ax = axs.ravel()[2 + timepointNumber]
+            ax.clear()
+            ax.hist(timepointData[:, contrastNumber], bins)
+            ax.grid()
+            ax.set_title('time point ' + str(timepointNumber))
+        plt.draw()
+
+    # End loop over time points
+#%%
+# =======================================================================================
+#
+# Check for convergence.
+# =======================================================================================
+
+# In order to also measure the deformation from the population atlas -> latent position,
+# create:
+#   (1) a mesh collection with as reference position the population reference position, and as positions
+#       the currently estimated time point positions.
+#   (2) a mesh with the current latent position
+# Note that in (1) we don't need those time positions now, but these will come in handy very soon to
+# optimize the latent position
+#
+# The parameter estimation happens in a (potentially) downsampled image grid, so it's import to work in the same space
+# when measuring and updating the latentDeformation
+transformUsedForEstimation = gems.KvlTransform(
+    requireNumpyArray(samsegLongitudinal.sstModel.optimizationHistory[-1]['downSampledTransformMatrix']))
+mesh_collection = gems.KvlMeshCollection()
+mesh_collection.read(samsegLongitudinal.latentDeformationAtlasFileName)
+mesh_collection.transform(transformUsedForEstimation)
+referencePosition = mesh_collection.reference_position
+timepointPositions = []
+for timepointNumber in samsegLongitudinal.timepointNumberProcessed + samsegLongitudinal.timepointNumberUpdate:
+    positionInTemplateSpace = samsegLongitudinal.probabilisticAtlas.mapPositionsFromSubjectToTemplateSpace(referencePosition,
+                                                                        transformUsedForEstimation) + \
+                                samsegLongitudinal.latentDeformation + samsegLongitudinal.timepointModels[timepointNumber].deformation
+    timepointPositions.append(
+        samsegLongitudinal.probabilisticAtlas.mapPositionsFromTemplateToSubjectSpace(positionInTemplateSpace, transformUsedForEstimation))
+mesh_collection.set_positions(referencePosition, timepointPositions)
+
+# Read mesh in sst warp
+mesh = samsegLongitudinal.probabilisticAtlas.getMesh(latentAtlasFileName, transformUsedForEstimation)
+
+#
+calculator = gems.KvlCostAndGradientCalculator(mesh_collection, K0, 0.0, transformUsedForEstimation)
+latentAtlasCost, _ = calculator.evaluate_mesh_position(mesh)
+# TODO this cost is huuuge
+#
+totalCost = totalTimepointCost + latentAtlasCost
+print('*' * 100 + '\n')
+print('iterationNumber: ', iterationNumber)
+print('totalCost: ', totalCost)
+print('   latentAtlasCost: ', latentAtlasCost)
+print('   totalTimepointCost: ', totalTimepointCost)
+print('*' * 100 + '\n')
+
+#%%
+samsegLongitudinal.historyOfTotalCost.append(totalCost)
+samsegLongitudinal.historyOfTotalTimepointCost.append(totalTimepointCost)
+samsegLongitudinal.historyOfLatentAtlasCost.append(latentAtlasCost)
+#%%
+if hasattr(samsegLongitudinal.visualizer, 'show_flag'):
+    import matplotlib.pyplot as plt  # avoid importing matplotlib by default
+    plt.ion()
+    if progressPlot is None:
+        plt.figure()
+        progressPlot = plt.subplot()
+    progressPlot.clear()
+    progressPlot.plot(samsegLongitudinal.historyOfTotalCost, color='k')
+    progressPlot.plot(samsegLongitudinal.historyOfTotalTimepointCost, linestyle='-.', color='b')
+    progressPlot.plot(samsegLongitudinal.historyOfLatentAtlasCost, linestyle='-.', color='r')
+    progressPlot.grid()
+    progressPlot.legend(['total', 'timepoints', 'latent atlas deformation'])
+    plt.draw()
+
+if samsegLongitudinal.saveHistory:
+    samsegLongitudinal.history["timepointMeansEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].gmm.means.copy())
+    samsegLongitudinal.history["timepointVariancesEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].gmm.variances.copy())
+    samsegLongitudinal.history["timepointMixtureWeightsEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].gmm.mixtureWeights.copy())
+    samsegLongitudinal.history["timepointBiasFieldCoefficientsEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].biasField.coefficients.copy())
+    samsegLongitudinal.history["timepointDeformationsEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].deformation)
+    samsegLongitudinal.history["timepointDeformationAtlasFileNamesEvolution"].append(samsegLongitudinal.timepointModels[timepointNumber].deformationAtlasFileName)
+    samsegLongitudinal.history["latentMeansEvolution"].append(samsegLongitudinal.latentMeans.copy())
+    samsegLongitudinal.history["latentVariancesEvolution"].append(samsegLongitudinal.latentVariances.copy())
+    samsegLongitudinal.history["latentMixtureWeightsEvolution"].append(samsegLongitudinal.latentMixtureWeights.copy())
+    samsegLongitudinal.history["latentDeformationEvolution"].append(samsegLongitudinal.latentDeformation.copy())
+    samsegLongitudinal.history["latentDeformationAtlasFileNameEvolution"].append(samsegLongitudinal.latentDeformationAtlasFileName)
+
+
+samsegLongitudinal.timerFit(f"Fit Segmentation {iterationNumber}")
+
+
+
+# =======================================================================================
+#
+# Update the latent variables based on the current parameter estimates
+#
+# =======================================================================================
+samsegLongitudinal.updateLatentDeformationAtlas(mesh_collection, mesh, K0, K1, transformUsedForEstimation)
+samsegLongitudinal.timerFit(f"Fit Latent Deformation {iterationNumber}" )
+samsegLongitudinal.updateGMMLatentVariables()
+samsegLongitudinal.timerFit(f"Fit Latent GMM {iterationNumber}")
+iterationNumber += 1
+# End loop over parameter and latent variable estimation iterations
+
+# %%
+ """
+
+#%%
+
+""" finalState = {
+    "sstMeans": samsegLongitudinal.sstModel.gmm.means,
+    "sstVariances": samsegLongitudinal.sstModel.gmm.variances,
+    "sstMixtureWeights": samsegLongitudinal.sstModel.gmm.mixtureWeights,
+    "sstBiasFieldCoefficients": samsegLongitudinal.sstModel.biasField.coefficients,
+    "sstDeformation": samsegLongitudinal.sstModel.deformation,
+    "sstDeformationAtlasFileName": samsegLongitudinal.sstModel.deformationAtlasFileName,
+    "sstOptimizationSummary": samsegLongitudinal.sstModel.optimizationSummary,
+    "sstOptimizationHistory": samsegLongitudinal.sstModel.optimizationHistory,
+    "sstNumberOfGaussiansPerClass": samsegLongitudinal.sstModel.gmm.numberOfGaussiansPerClass,
+    "labels": samsegLongitudinal.sstModel.modelSpecifications.FreeSurferLabels,
+    "names":  samsegLongitudinal.sstModel.modelSpecifications.names,
+    "timepointVolumesInCubicMm": samsegLongitudinal.timepointVolumesInCubicMm,
+    "optimizationSummary": samsegLongitudinal.optimizationSummary,
+    "latentMeans": samsegLongitudinal.latentMeans.copy(),
+    "latentVariances": samsegLongitudinal.latentVariances.copy(),
+    "latentMixtureWeights": samsegLongitudinal.latentMixtureWeights.copy(),
+    "latentDeformation": samsegLongitudinal.latentDeformation.copy(),
+    "latentDeformationAtlasFileName": samsegLongitudinal.latentDeformationAtlasFileName,
+    "imageToImageTransformMatrix" : samsegLongitudinal.imageToImageTransformMatrix,
+    "timepointModel": []
+}
+for timepointNumber in samsegLongitudinal.timepointNumberUpdate + samsegLongitudinal.timepointNumberProcessed:
+    finaleStateTimePoint = {
+    "timepointFileName": samsegLongitudinal.imageFileNamesList[timepointNumber],
+    "timepointMeans": samsegLongitudinal.timepointModels[timepointNumber].gmm.means.copy(),
+    "timepointVariances": samsegLongitudinal.timepointModels[timepointNumber].gmm.variances.copy(),
+    "timepointMixtureWeights": samsegLongitudinal.timepointModels[timepointNumber].gmm.mixtureWeights.copy(),
+    #"timepointBiasFieldCoefficients": samsegLongitudinal.timepointModels[timepointNumber].biasField.coefficients.copy(),
+    "timepointDeformations": samsegLongitudinal.timepointModels[timepointNumber].deformation,
+    # this should be without the final deformation, hence save it before postprocessing
+    "timepointDeformationAtlasFileNames": samsegLongitudinal.timepointModels[timepointNumber].deformationAtlasFileName,
+    }
+    finalState["timepointModel"].append(finaleStateTimePoint)
+
+finalStatePath = os.path.join(samsegLongitudinal.savePath, 'finalState1.p')
+print(f"Saving final State to {finalStatePath}")
+with open(finalStatePath, 'wb') as file:
+    pickle.dump(finalState, file, protocol=pickle.HIGHEST_PROTOCOL)
+"""
+# %%

@@ -7,4 +7,5 @@ from .BiasField import BiasField
 from .ProbabilisticAtlas import ProbabilisticAtlas
 from .Samseg import Samseg
 from .SamsegLongitudinal import SamsegLongitudinal
+from .SamsegLongitudinalUpdateWeighted import SamsegLongitudinalUpdateWeighted
 from .figures import initVisualizer

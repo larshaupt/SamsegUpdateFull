@@ -59,6 +59,14 @@ PYBIND11_MODULE(gemsbindings, m) {
                 py::arg("K0"),
                 py::arg("K1"),
                 py::arg("transform"))
+            .def(py::init<KvlMeshCollection &,
+                const double &,
+                const py::array_t<double> &,
+                const KvlTransform &>(),
+                py::arg("meshCollection"),
+                py::arg("K0"),
+                py::arg("K1s")=py::array_t<double>(),
+                py::arg("transform"))
             .def("evaluate_mesh_position", &KvlCostAndGradientCalculator::EvaluateMeshPosition)
             // Aliases to help with profiling
             .def("evaluate_mesh_position_a", &KvlCostAndGradientCalculator::EvaluateMeshPosition)
